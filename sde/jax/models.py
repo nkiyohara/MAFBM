@@ -1,11 +1,9 @@
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import sde.jax.markov_approximation as ma
 import jax.scipy.special as sp
 import flax.linen as nn
 import distrax
-import diffrax
 
 
 class Beta:
@@ -25,13 +23,20 @@ class Beta:
         return jax.random.beta(key, self.alpha, self.beta)
 
     def kl_divergence(self, other):
-        return sp.betaln(other.alpha, other.beta) - sp.betaln(self.alpha, self.beta) + (self.alpha - other.alpha) * sp.digamma(self.alpha) + (self.beta - other.beta) * sp.digamma(self.beta) + (other.alpha - self.alpha + other.beta - self.beta) * sp.digamma(self.alpha + self.beta)
+        return (
+            sp.betaln(other.alpha, other.beta)
+            - sp.betaln(self.alpha, self.beta)
+            + (self.alpha - other.alpha) * sp.digamma(self.alpha)
+            + (self.beta - other.beta) * sp.digamma(self.beta)
+            + (other.alpha - self.alpha + other.beta - self.beta)
+            * sp.digamma(self.alpha + self.beta)
+        )
 
 
 def up(x):
     shape = x.shape
     new_shape = [*shape[:-3], 2 * shape[-3], 2 * shape[-2], shape[-1]]
-    return jax.image.resize(x, new_shape, 'nearest')
+    return jax.image.resize(x, new_shape, "nearest")
 
 
 class DownBlock(nn.Module):
@@ -39,7 +44,7 @@ class DownBlock(nn.Module):
 
     @nn.compact
     def __call__(self, x):
-        x = nn.Conv(self.out_channels, kernel_size=(3, 3), padding='SAME')(x)
+        x = nn.Conv(self.out_channels, kernel_size=(3, 3), padding="SAME")(x)
         x = nn.max_pool(x, (2, 2), (2, 2))
         x = nn.GroupNorm(8)(x)
         x = nn.silu(x)
@@ -51,7 +56,7 @@ class UpBlock(nn.Module):
 
     @nn.compact
     def __call__(self, x):
-        x = nn.Conv(self.out_channels, kernel_size=(3, 3), padding='SAME')(x)
+        x = nn.Conv(self.out_channels, kernel_size=(3, 3), padding="SAME")(x)
         x = nn.GroupNorm(8)(x)
         x = up(x)
         x = nn.silu(x)
@@ -90,9 +95,9 @@ class Decoder(nn.Module):
         x = UpBlock(2 * self.num_features)(x)
         x = UpBlock(self.num_features)(x)
         x = UpBlock(self.num_features)(x)
-        x = nn.Conv(self.num_features, kernel_size=(3, 3), padding='SAME')(x)
+        x = nn.Conv(self.num_features, kernel_size=(3, 3), padding="SAME")(x)
         x = nn.silu(x)
-        x = nn.Conv(self.num_channels, kernel_size=(3, 3), padding='SAME')(x)
+        x = nn.Conv(self.num_channels, kernel_size=(3, 3), padding="SAME")(x)
         x = nn.sigmoid(x)
         return x
 
@@ -104,7 +109,7 @@ class Content(nn.Module):
 
     @nn.compact
     def __call__(self, h):
-        w = jnp.median(h[:self.num_content_frames], axis=-2)
+        w = jnp.median(h[: self.num_content_frames], axis=-2)
         w = nn.Dense(self.num_features)(w)
         w = nn.silu(w)
         w = nn.Dense(self.num_contents)(w)
@@ -118,19 +123,21 @@ class Infer(nn.Module):
     @nn.compact
     def __call__(self, x):
         num_frames, num_features = x.shape
-        h = nn.Conv(self.num_features, kernel_size=(3,), padding='SAME')(x)
+        h = nn.Conv(self.num_features, kernel_size=(3,), padding="SAME")(x)
         h = nn.silu(h)
-        h = nn.Conv(self.num_features, kernel_size=(3,), padding='SAME')(h)
+        h = nn.Conv(self.num_features, kernel_size=(3,), padding="SAME")(h)
 
-        g = nn.Dense(self.num_features)(jnp.concatenate([h[0], x[0], x[1], x[2]], axis=-1))
+        g = nn.Dense(self.num_features)(
+            jnp.concatenate([h[0], x[0], x[1], x[2]], axis=-1)
+        )
         g = nn.silu(g)
         g = nn.Dense(self.num_features)(g)
         g = nn.silu(g)
         g = nn.Dense(2 * self.num_latents)(g)
 
-        x0_mean = g[:self.num_latents]
-        x0_logvar = g[self.num_latents:]
-        x0_posterior = distrax.MultivariateNormalDiag(x0_mean, jnp.exp(.5 * x0_logvar))
+        x0_mean = g[: self.num_latents]
+        x0_logvar = g[self.num_latents :]
+        x0_posterior = distrax.MultivariateNormalDiag(x0_mean, jnp.exp(0.5 * x0_logvar))
         return x0_posterior, h
 
 
@@ -178,17 +185,18 @@ class FractionalSDE:
         time_horizon (float): The time horizon of the model, used to calculate omega.
         num_latents (int): The number of latent dimensions.
     """
+
     def __init__(
-            self,
-            b: Function,
-            u: Function,
-            s: Function,
-            gamma: jnp.ndarray,
-            hurst: float or None,
-            type: int = 1,
-            time_horizon: float = 1.,
-            num_latents: int = 1,
-        ):
+        self,
+        b: Function,
+        u: Function,
+        s: Function,
+        gamma: jnp.ndarray,
+        hurst: float or None,
+        type: int = 1,
+        time_horizon: float = 1.0,
+        num_latents: int = 1,
+    ):
         self.gamma = gamma
         self.type = type
         self.num_latents = num_latents
@@ -197,20 +205,26 @@ class FractionalSDE:
         self._s = s
 
         if type == 1:
-            self.omega_fn = jax.jit(lambda hurst: ma.omega_optimized_1(self.gamma, hurst, time_horizon))
+            self.omega_fn = jax.jit(
+                lambda hurst: ma.omega_optimized_1(self.gamma, hurst, time_horizon)
+            )
         elif type == 2:
-            self.omega_fn = jax.jit(lambda hurst: ma.omega_optimized_2(self.gamma, hurst, time_horizon))
+            self.omega_fn = jax.jit(
+                lambda hurst: ma.omega_optimized_2(self.gamma, hurst, time_horizon)
+            )
         else:
-            raise ValueError('type must be either 1 or 2')
+            raise ValueError("type must be either 1 or 2")
 
         if hurst is None:
             self._hurst = None
         elif hurst < 0:
-            print('Falling back to standard Brownian Motion (gamma = [0], omega = [1]). Args gamma and type are ignored.')
-            self._hurst = .5
-            self.type = 2   # prevent problems with gamma = 0
-            self.gamma = jnp.array([0.])
-            self._omega = jnp.array([1.])
+            print(
+                "Falling back to standard Brownian Motion (gamma = [0], omega = [1]). Args gamma and type are ignored."
+            )
+            self._hurst = 0.5
+            self.type = 2  # prevent problems with gamma = 0
+            self.gamma = jnp.array([0.0])
+            self._omega = jnp.array([1.0])
         else:
             self._hurst = hurst
             self._omega = self.omega_fn(hurst)
@@ -220,23 +234,25 @@ class FractionalSDE:
         return len(self.gamma)
 
     def check_dt(self, dt):
-        assert self.gamma.max() * dt < .5, 'dt too large for stable integration, please reduce dt or decrease largest gamma'
+        assert self.gamma.max() * dt < 0.5, (
+            "dt too large for stable integration, please reduce dt or decrease largest gamma"
+        )
 
     def init(self, key):
         keys = jax.random.split(key, 3)
         params = {}
 
         if self._hurst is None:
-            params['hurst_raw'] = 0.    # sigmoid(0.) = .5
+            params["hurst_raw"] = 0.0  # sigmoid(0.) = .5
 
-        params['b'] = self._b.init(keys[0])
-        params['u'] = self._u.init(keys[1])
-        params['s'] = self._s.init(keys[2])
+        params["b"] = self._b.init(keys[0])
+        params["u"] = self._u.init(keys[1])
+        params["s"] = self._s.init(keys[2])
         return params
 
     def hurst(self, params):
         if self._hurst is None:
-            return jax.nn.sigmoid(params['hurst_raw'])
+            return jax.nn.sigmoid(params["hurst_raw"])
         else:
             return self._hurst
 
@@ -246,16 +262,16 @@ class FractionalSDE:
         else:
             return self._omega
 
-    def b(self, params, t, x, args):      # Prior drift.
-        return self._b(params['b'], t, x, args)
+    def b(self, params, t, x, args):  # Prior drift.
+        return self._b(params["b"], t, x, args)
 
-    def u(self, params, t, x, y, args):   # Approximate posterior control.
-        return self._u(params['u'], t, x, y, args)
+    def u(self, params, t, x, y, args):  # Approximate posterior control.
+        return self._u(params["u"], t, x, y, args)
 
-    def s(self, params, t, x, args):      # Shared diffusion.
-        return self._s(params['s'], t, x, args)
+    def s(self, params, t, x, args):  # Shared diffusion.
+        return self._s(params["s"], t, x, args)
 
-    def __call__(self, params, key, x0, ts, dt, solver='euler', args=None):
+    def __call__(self, params, key, x0, ts, dt, solver="euler", args=None):
         keys = jax.random.split(key, 4)
 
         hurst = self.hurst(params)
@@ -263,18 +279,63 @@ class FractionalSDE:
 
         if self.type == 1:
             cov = 1 / (self.gamma[None, :] + self.gamma[:, None])
-            y0 = jax.random.multivariate_normal(keys[2], jnp.zeros((self.num_latents, self.num_k)), cov)
+            y0 = jax.random.multivariate_normal(
+                keys[2], jnp.zeros((self.num_latents, self.num_k)), cov
+            )
         elif self.type == 2:
             y0 = jnp.zeros((self.num_latents, self.num_k))
 
-        if solver == 'euler':
+        if solver == "euler":
             num_steps = int(jnp.ceil((ts[-1] - ts[0]) / dt))
-            ts_, xs_, log_path = ma.solve_vector(params, self, omega, x0, y0, ts[0], num_steps, dt, keys[3], args)
+            ts_, xs_, log_path = ma.solve_vector(
+                params, self, omega, x0, y0, ts[0], num_steps, dt, keys[3], args
+            )
 
             # interpolate for requested timesteps
             xs = jax.vmap(jnp.interp, in_axes=(None, None, 1), out_axes=1)(ts, ts_, xs_)
         else:
-            xs, log_path = ma.solve_diffrax(params, self, omega, x0, y0, ts, dt, keys[3], solver, args)
+            xs, log_path = ma.solve_diffrax(
+                params, self, omega, x0, y0, ts, dt, keys[3], solver, args
+            )
+        return xs, log_path
+
+    def sample_prior(self, params, key, x0, ts, dt, solver="euler", args=None):
+        """Sample from the prior distribution by setting the control term to zero."""
+        keys = jax.random.split(key, 4)
+
+        hurst = self.hurst(params)
+        omega = self.omega(hurst)
+
+        if self.type == 1:
+            cov = 1 / (self.gamma[None, :] + self.gamma[:, None])
+            y0 = jax.random.multivariate_normal(
+                keys[2], jnp.zeros((self.num_latents, self.num_k)), cov
+            )
+        elif self.type == 2:
+            y0 = jnp.zeros((self.num_latents, self.num_k))
+
+        # 制御項をゼロにするための関数
+        def zero_u(params, t, x, y, args):
+            return jnp.zeros_like(y[0])
+
+        # 元の制御関数を一時的に保存
+        original_u = self._u
+        self._u = zero_u
+
+        if solver == "euler":
+            num_steps = int(jnp.ceil((ts[-1] - ts[0]) / dt))
+            ts_, xs_, log_path = ma.solve_vector(
+                params, self, omega, x0, y0, ts[0], num_steps, dt, keys[3], args
+            )
+            xs = jax.vmap(jnp.interp, in_axes=(None, None, 1), out_axes=1)(ts, ts_, xs_)
+        else:
+            xs, log_path = ma.solve_diffrax(
+                params, self, omega, x0, y0, ts, dt, keys[3], solver, args
+            )
+
+        # 元の制御関数を復元
+        self._u = original_u
+
         return xs, log_path
 
 
@@ -286,6 +347,7 @@ class VideoSDE:
         x0_prior_learnable (bool): Whether the prior for x0 is learnable.
 
     """
+
     def __init__(
         self,
         image_size,
@@ -315,36 +377,47 @@ class VideoSDE:
         params = {}
 
         if self.x0_prior_learnable:
-            params['x0_prior'] = self._x0_prior
+            params["x0_prior"] = self._x0_prior
 
         dummy_num_timesteps = 5
-        params['encoder'] = self._encoder.init(keys[0], jnp.zeros((self.image_size, self.image_size, self.num_channels)))
-        params['content'] = self._content.init(keys[1], jnp.zeros((dummy_num_timesteps, self.num_features)))
-        params['infer'] = self._infer.init(keys[2], jnp.zeros((dummy_num_timesteps, self.num_features)))
-        params['sde'] = self._sde.init(keys[3])
-        params['decoder'] = self._decoder.init(keys[1], jnp.zeros((self.num_contents + self.num_latents)))
+        params["encoder"] = self._encoder.init(
+            keys[0], jnp.zeros((self.image_size, self.image_size, self.num_channels))
+        )
+        params["content"] = self._content.init(
+            keys[1], jnp.zeros((dummy_num_timesteps, self.num_features))
+        )
+        params["infer"] = self._infer.init(
+            keys[2], jnp.zeros((dummy_num_timesteps, self.num_features))
+        )
+        params["sde"] = self._sde.init(keys[3])
+        params["decoder"] = self._decoder.init(
+            keys[1], jnp.zeros((self.num_contents + self.num_latents))
+        )
         return params
 
     def x0_prior(self, params):
         if self.x0_prior_learnable:
-            return params['x0_prior']
+            return params["x0_prior"]
         else:
             return self._x0_prior
 
     def encoder(self, params, *args):
-        return self._encoder.apply(params['encoder'], *args)
+        return self._encoder.apply(params["encoder"], *args)
 
     def decoder(self, params, *args):
-        return self._decoder.apply(params['decoder'], *args)
+        return self._decoder.apply(params["decoder"], *args)
 
-    def content(self, params ,*args):
-        return self._content.apply(params['content'], *args)
+    def content(self, params, *args):
+        return self._content.apply(params["content"], *args)
 
     def infer(self, params, *args):
-        return self._infer.apply(params['infer'], *args)
+        return self._infer.apply(params["infer"], *args)
 
     def sde(self, params, *args):
-        return self._sde(params['sde'], *args)
+        return self._sde(params["sde"], *args)
+
+    def prior_sde(self, params, key, x0, ts, dt, solver="euler", args=None):
+        return self._sde.sample_prior(params["sde"], key, x0, ts, dt, solver, args)
 
     def __call__(self, params, key, ts, frames, dt, solver):
         keys = jax.random.split(key, 2)
@@ -354,11 +427,15 @@ class VideoSDE:
         h = self.encoder(params, frames)
         w = self.content(params, h)
         x0_posterior, h = self.infer(params, h)
-        context = {'ts': ts, 'hs': h}
+        context = {"ts": ts, "hs": h}
         x0 = x0_posterior.sample(seed=keys[0])
         kl_x0 = x0_posterior.kl_divergence(x0_prior)
 
-        xs, logpath = self.sde(params, keys[1], x0, ts, dt, solver, {'context': context})
-    
-        frames_ = self.decoder(params, jnp.concatenate([w[None, :].repeat(len(xs), axis=0), xs], axis=-1))
+        xs, logpath = self.sde(
+            params, keys[1], x0, ts, dt, solver, {"context": context}
+        )
+
+        frames_ = self.decoder(
+            params, jnp.concatenate([w[None, :].repeat(len(xs), axis=0), xs], axis=-1)
+        )
         return frames_, (kl_x0, logpath)

@@ -2,21 +2,19 @@ import jax
 import jax.numpy as jnp
 import numpy as onp
 import flax.linen as nn
-import matplotlib.pyplot as plt
 import optax
 import diffrax
 import distrax
 import sde.jax.markov_approximation as ma
-from sde.jax.models import FractionalSDE, VideoSDE, StaticFunction
+from sde.jax.models import FractionalSDE, VideoSDE
 from sde import data
 from sde.jax.util import NumpyLoader
-from moviepy.editor import ImageSequenceClip
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 import pickle
 import typing
-from jsonargparse import ArgumentParser, ActionConfigFile
+from jsonargparse import ArgumentParser
 import wandb
+import os
 
 
 class MLP(nn.Module):
@@ -42,14 +40,16 @@ class ControlFunction:
         self.mlp = MLP(num_latents)
 
     def init(self, key):
-        params = self.mlp.init(key, jnp.zeros(self.num_latents * (self.num_k + 1) + self.num_features))
+        params = self.mlp.init(
+            key, jnp.zeros(self.num_latents * (self.num_k + 1) + self.num_features)
+        )
         # Initialization trick from Glow.
-        params['params']['Dense_2']['kernel'] *= 0
+        params["params"]["Dense_2"]["kernel"] *= 0
         return params
 
     def __call__(self, params, t, x, y, args):
-        context = args['context']
-        h = jax.vmap(jnp.interp, (None, None, 1))(t, context['ts'], context['hs'])
+        context = args["context"]
+        h = jax.vmap(jnp.interp, (None, None, 1))(t, context["ts"], context["hs"])
         return self.mlp.apply(params, jnp.concatenate([x, y.flatten(), h], axis=-1))
 
 
@@ -82,57 +82,109 @@ class Diffusion:
 
 
 def build_data_and_model(
-        dataset: str,
-        white: bool,
-        num_latents: int,
-        num_contents: int,
-        num_features: int,
-        num_k: int,
-        gamma_max: float,
-        int_sub_steps: int,
-    ):
-
+    dataset: str,
+    white: bool,
+    num_latents: int,
+    num_contents: int,
+    num_features: int,
+    num_k: int,
+    gamma_max: float,
+    int_sub_steps: int,
+):
     if white:
         num_k = 1
         gamma = None
-        hurst = - 1
+        hurst = -1
     else:
         gamma = ma.gamma_by_gamma_max(num_k, gamma_max)
         hurst = None
 
     data_train, data_val, dataset_kwargs = data.get(dataset)
-    ts = jnp.arange(len(data_train[0])) * dataset_kwargs['dt']
-    dt = dataset_kwargs['dt'] / int_sub_steps
+    ts = jnp.arange(len(data_train[0])) * dataset_kwargs["dt"]
+    dt = dataset_kwargs["dt"] / int_sub_steps
 
     key = jax.random.PRNGKey(0)
     b = Drift(num_latents)
     u = ControlFunction(num_k, num_latents, num_features)
     s = Diffusion(num_latents)
-    sde = FractionalSDE(b, u, s, gamma, hurst=hurst, type=1, time_horizon=ts[-1], num_latents=num_latents)
-    x0_prior = distrax.MultivariateNormalDiag(jnp.zeros(num_latents), jnp.ones(num_latents))
-    model = VideoSDE(dataset_kwargs['image_size'], dataset_kwargs['num_channels'], num_features, num_latents, num_contents, x0_prior, True, sde)
+    sde = FractionalSDE(
+        b,
+        u,
+        s,
+        gamma,
+        hurst=hurst,
+        type=1,
+        time_horizon=ts[-1],
+        num_latents=num_latents,
+    )
+    x0_prior = distrax.MultivariateNormalDiag(
+        jnp.zeros(num_latents), jnp.ones(num_latents)
+    )
+    model = VideoSDE(
+        dataset_kwargs["image_size"],
+        dataset_kwargs["num_channels"],
+        num_features,
+        num_latents,
+        num_contents,
+        x0_prior,
+        True,
+        sde,
+    )
     model._sde.check_dt(dt)
     params = model.init(key)
     return ts, dt, data_train, data_val, model, params
 
 
 def train(
-        dataset: str,
-        white: bool = False,    # fallback to standard sde
-        batch_size: int = 32,
-        num_epochs: int = 100,
-        num_latents: int = 4,
-        num_contents: int = 64,
-        num_features: int = 64,
-        num_k: int = 5,
-        gamma_max: float = 20.,
-        int_sub_steps: int = 3,
-        kl_weight: float = 1.,
-    ):
+    dataset: str,
+    white: bool = False,  # fallback to standard sde
+    batch_size: int = 32,
+    num_epochs: int = 100,
+    num_latents: int = 4,
+    num_contents: int = 64,
+    num_features: int = 64,
+    num_k: int = 5,
+    gamma_max: float = 20.0,
+    int_sub_steps: int = 3,
+    kl_weight: float = 1.0,
+    save_every: int = 10,  # Save parameters every N epochs
+):
     solver = diffrax.StratonovichMilstein()
 
-    ts, dt, data_train, data_val, model, params = build_data_and_model(dataset, white, num_latents, num_contents, num_features, num_k, gamma_max, int_sub_steps)
-    dataloader = NumpyLoader(data_train, batch_size=batch_size, shuffle=True, num_workers=8, drop_last=True)
+    ts, dt, data_train, data_val, model, params = build_data_and_model(
+        dataset,
+        white,
+        num_latents,
+        num_contents,
+        num_features,
+        num_k,
+        gamma_max,
+        int_sub_steps,
+    )
+    dataloader = NumpyLoader(
+        data_train, batch_size=batch_size, shuffle=True, num_workers=8, drop_last=True
+    )
+
+    # Create directory for saving parameters
+    params_dir = "saved_params"
+    os.makedirs(params_dir, exist_ok=True)
+
+    # Create subdirectory with wandb run name
+    run_name = wandb.run.name
+    run_params_dir = os.path.join(params_dir, run_name)
+    os.makedirs(run_params_dir, exist_ok=True)
+
+    # Function to save parameters
+    def save_params(params, epoch):
+        params_path = os.path.join(run_params_dir, f"params_epoch_{epoch}.p")
+        with open(params_path, "wb") as f:
+            pickle.dump(params, f)
+        wandb.save(params_path)
+        # Also save as latest for convenience
+        latest_path = os.path.join(run_params_dir, "params_latest.p")
+        with open(latest_path, "wb") as f:
+            pickle.dump(params, f)
+        wandb.save(latest_path)
 
     def loss_fn(params, key, frames):
         frames_, (kl_x0, logpath) = model(params, key, ts, frames, dt, solver)
@@ -158,30 +210,34 @@ def train(
             nll, kl_x0, logpath = loss_aux
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
-            pbar.set_description(f'[Epoch {epoch+1}/{num_epochs}] Loss: {float(loss):.2f}, Hurst: {model._sde.hurst(params["sde"]):.2f}, NLL: {nll:.2f}, KL_x0: {kl_x0:.2f}, KL_path: {logpath:.2f}')
+            pbar.set_description(
+                f"[Epoch {epoch + 1}/{num_epochs}] Loss: {float(loss):.2f}, Hurst: {model._sde.hurst(params['sde']):.2f}, NLL: {nll:.2f}, KL_x0: {kl_x0:.2f}, KL_path: {logpath:.2f}"
+            )
 
             if onp.isnan(float(loss)):
                 return
 
-            wandb.log({
-                'loss': float(loss),
-                'nll': float(nll),
-                'kl_x0': float(kl_x0),
-                'kl_path': float(logpath),
-                'hurst': float(model._sde.hurst(params["sde"])),
-            })
+            wandb.log(
+                {
+                    "loss": float(loss),
+                    "nll": float(nll),
+                    "kl_x0": float(kl_x0),
+                    "kl_path": float(logpath),
+                    "hurst": float(model._sde.hurst(params["sde"])),
+                }
+            )
 
-        with open('params.p', 'wb') as f:
-            pickle.dump(params, f)
-        wandb.save('params.p')
+        # Save parameters at the end of each epoch if it's a save epoch or the final epoch
+        if (epoch + 1) % save_every == 0 or epoch == num_epochs - 1:
+            save_params(params, epoch + 1)
 
     wandb.join(quiet=True)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_function_arguments(train, as_positional=False)
 
     cfg = parser.parse_args()
-    wandb.init(project=f'jax-{cfg.dataset}', config=cfg)
+    wandb.init(project=f"jax-{cfg.dataset}", config=cfg)
     train(**cfg)
