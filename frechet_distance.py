@@ -13,7 +13,7 @@ import diffrax
 from tqdm import tqdm
 from sde.jax.train import build_data_and_model
 import torch
-from svg_mmnist_fd import FrechetDistanceCalculator
+from srvp_fd import FrechetDistanceCalculator
 import pandas as pd
 from io import BytesIO
 from PIL import Image
@@ -26,9 +26,9 @@ forecast_length = 25  # Number of steps to predict
 output_dir = "sde_prediction_results_multi_traj"
 
 # Number of different input trajectories to evaluate
-num_trajectories = 4
+num_trajectories = 5
 # Number of samples per trajectory for Monte Carlo estimation
-num_samples_per_trajectory = 32
+num_samples_per_trajectory = 512
 
 # Visualization trajectory index (dataset index to use for visualization)
 viz_trajectory_idx = 10
@@ -48,7 +48,9 @@ models = [
     # {"name": "pious-morning-15", "kl_weight": 1.0},    # Still running - commented out
     # {"name": "effortless-meadow-14", "kl_weight": 0.125},
     # {"name": "graceful-sky-13", "kl_weight": 0.25},
-    {"name": "treasured-river-12", "kl_weight": 0.5}
+    # {"name": "treasured-river-12", "kl_weight": 0.5}
+    {"name": "classic-sunset-19", "kl_weight": 0.1},
+    {"name": "stoic-mountain-18", "kl_weight": 1.0},
 ]
 
 # Create output directory if it doesn't exist
@@ -58,7 +60,7 @@ os.makedirs(output_dir, exist_ok=True)
 # These should match the configuration used during training
 dataset = "mmnist"  # or "ball", "bar", "bounce" depending on what was used
 white = True
-num_latents = 4
+num_latents = 10
 num_contents = 64
 num_features = 64
 num_k = 5
@@ -333,7 +335,7 @@ def analyze_model(model_info, model_idx):
 
             # Calculate Fréchet distance for this frame
             frame_fd = fd_calculator(gt_frame_torch, model_frame_torch)
-            frame_fds.append(frame_fd.item())
+            frame_fds.append(frame_fd)
 
         all_traj_fd.append(frame_fds)
 
@@ -819,8 +821,105 @@ def create_prediction_video(results, method="recursive", output_dir=output_dir, 
         print(f"Video created for model with KL weight {kl_weight} at {video_path}")
 
 
-# %%
-# Add debug function to inspect prediction samples
+def create_statistics_video(results, output_dir=output_dir, fps=5):
+    """Create side-by-side video of mean and variance for each model"""
+
+    for i, result in enumerate(results):
+        kl_weight = result["kl_weight"]
+        times_pred = result["ts_forecast"]
+
+        # Get the statistics data
+        mean_data = result["viz_mean_forecast"]
+        std_data = result["viz_std_forecast"]
+
+        # Convert JAX arrays to NumPy arrays if needed
+        if hasattr(mean_data, "device_buffer"):
+            mean_data = np.array(mean_data)
+        if hasattr(std_data, "device_buffer"):
+            std_data = np.array(std_data)
+
+        # Create a list to store frames
+        frames = []
+
+        # For each timestep, create a frame with mean and std side by side
+        for t in range(forecast_length):
+            # Create a figure with mean and std side by side
+            fig, axes = plt.subplots(1, 2, figsize=(5, 2.5))
+
+            # Use actual time value instead of just the index
+            actual_time = (
+                times_pred[t].item()
+                if hasattr(times_pred[t], "item")
+                else times_pred[t]
+            )
+            fig.suptitle(
+                f"KL Weight = {kl_weight}, Statistics, Time = {actual_time:.2f}",
+                size=14,
+            )
+
+            try:
+                # Get the mean frame
+                mean_frame = np.array(mean_data[t])
+
+                # Handle different channel formats
+                if mean_frame.ndim == 3 and mean_frame.shape[2] == 1:
+                    mean_frame = mean_frame[:, :, 0]
+
+                # Display the mean image
+                axes[0].imshow(mean_frame, cmap="gray", vmin=0, vmax=1)
+                axes[0].set_title("Mean")
+                axes[0].set_xticks([])
+                axes[0].set_yticks([])
+
+                # Get the std frame
+                std_frame = np.array(std_data[t])
+
+                # Handle different channel formats
+                if std_frame.ndim == 3 and std_frame.shape[2] == 1:
+                    std_frame = std_frame[:, :, 0]
+
+                # Display the std image
+                axes[1].imshow(std_frame, cmap="viridis")
+                axes[1].set_title("Std Dev")
+                axes[1].set_xticks([])
+                axes[1].set_yticks([])
+            except Exception as e:
+                print(f"Error processing statistics frame {t}: {e}")
+                for ax in axes:
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "Error",
+                        horizontalalignment="center",
+                        verticalalignment="center",
+                        transform=ax.transAxes,
+                        color="red",
+                    )
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+
+            plt.tight_layout()
+
+            # Convert the figure to an image array using PIL
+            buf = BytesIO()
+            fig.savefig(buf, format="png")
+            buf.seek(0)
+            img = np.array(Image.open(buf))
+            frames.append(img)
+
+            plt.close()
+            buf.close()
+
+        # Create and save the video
+        clip = ImageSequenceClip(frames, fps=fps)
+        video_path = os.path.join(output_dir, f"statistics_kl{kl_weight}_video.mp4")
+        clip.write_videofile(video_path, codec="libx264", audio=False)
+
+        print(
+            f"Statistics video created for model with KL weight {kl_weight} at {video_path}"
+        )
+
+
 def debug_prediction_samples(results):
     """Debug function to inspect prediction samples before creating videos"""
     print("\n=== Debugging Prediction Samples ===")
@@ -951,10 +1050,11 @@ def debug_prediction_samples(results):
         print("\n" + "-" * 50)
 
 
-# Run debug function before creating videos
+# Generate videos
+print("Generating prediction and statistics videos...")
 debug_prediction_samples(all_results)
-
 create_prediction_video(all_results)
+create_statistics_video(all_results)
 
 print("All visualizations completed!")
 

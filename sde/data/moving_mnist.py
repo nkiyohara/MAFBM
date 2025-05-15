@@ -312,7 +312,11 @@ class MovingMNIST(object):
         return x
 
     def get_trajectory_with_different_noise(
-        self, index: int, noise_seed: int, divergence_step: int = 0
+        self,
+        index: int,
+        noise_seed: int,
+        divergence_step: int = 0,
+        swap_digits: bool = False,
     ):
         """Generate a trajectory with controlled noise divergence.
 
@@ -338,9 +342,12 @@ class MovingMNIST(object):
         x = np.zeros(
             (self.seq_len, image_size, image_size, self.channels), dtype=np.float32
         )
+        indices = base_rng.randint(self.N, size=self.num_digits)
+        if swap_digits:
+            indices = indices[::-1]
 
         for n in range(self.num_digits):
-            idx = base_rng.randint(self.N)
+            idx = indices[n]
             digit, _ = self.data[idx]
 
             # Initialize position and velocity

@@ -24,16 +24,12 @@ dependencies = [
     "wandb>=0.19.7",
     "stochastic @ git+https://github.com/crflynn/stochastic.git",
     'flm @ git+ssh://git@github.com/bencoscia/flm.git',
-    "srvp-fd>=0.1.0",
-    "svg-mmnist-fd",
+    "srvp-fd>=0.3.0",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sde"]
-
-[tool.uv.sources]
-svg-mmnist-fd = { git = "https://github.com/nkiyohara/svg-mmnist-fd.git" }
 
 
 [dependency-groups]
