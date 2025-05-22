@@ -50,7 +50,7 @@ models = [
     # {"name": "graceful-sky-13", "kl_weight": 0.25},
     # {"name": "treasured-river-12", "kl_weight": 0.5}
     {"name": "classic-sunset-19", "kl_weight": 0.1},
-    {"name": "stoic-mountain-18", "kl_weight": 1.0},
+    # {"name": "stoic-mountain-18", "kl_weight": 1.0},
 ]
 
 # Create output directory if it doesn't exist
